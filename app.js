@@ -5,14 +5,14 @@ const mongoose = require("mongoose");
 const session = require("express-session");
 const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
-
+const googleStrategy = require("passport-google-oauth20").Strategy;
+const findOrCreate = require("mongoose-findorcreate");
 const app = express();
 
 app.use(express.static("public"));
 app.set("view engine", "ejs");
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Setting session
 app.use(
   session({
     secret: "secret",
@@ -21,9 +21,7 @@ app.use(
   })
 );
 
-// Setting passport
 app.use(passport.initialize());
-// Setting passport untuk mengatur session
 app.use(passport.session());
 
 mongoose.connect(
@@ -36,20 +34,61 @@ mongoose.connect(
 const userSchema = new mongoose.Schema({
   username: String,
   password: String,
+  googleId: String,
+  secret: String,
 });
 
-// menggunakan plugin local mongoose yang digunakan untuk hash & salt password
 userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
 
 const UserModel = new mongoose.model("User", userSchema);
 
-// digunakan untuk authenticate user dari username dan password
 passport.use(UserModel.createStrategy());
-passport.serializeUser(UserModel.serializeUser());
-passport.deserializeUser(UserModel.deserializeUser());
+passport.serializeUser((user, done) => done(null, user.id));
+passport.deserializeUser((id, done) => {
+  UserModel.findById(id, (err, user) => done(err, user));
+});
+
+passport.use(
+  new googleStrategy(
+    {
+      clientID: process.env.CLIENT_ID,
+      clientSecret: process.env.CLIENT_SECRET,
+      callbackURL: "http://localhost:3000/auth/google/secrets",
+      userProfileURL: "http://www.googleapis.com/oauth2/v3/userinfo",
+    },
+    (accessToken, refreshToken, profile, cb) => {
+      console.log(profile);
+      UserModel.findOrCreate({ googleId: profile.id }, (err, user) => {
+        return cb(err, user);
+      });
+    }
+  )
+);
 
 app.get("/", (req, res) => {
   res.render("home");
+});
+
+app.get("/auth/google", (req, res) => {
+  try {
+    console.log("sip");
+    passport.authenticate("google", { scope: ["profile"] });
+  } catch (error) {
+    console.log("a", error);
+  }
+});
+
+app.get("/auth/google/secrets", (req, res) => {
+  try {
+    console.log("mantap");
+    passport.authenticate("google", { failureRedirect: "/login" }),
+      (req, res) => {
+        res.redirect("/secrets");
+      };
+  } catch (error) {
+    console.log("b", error);
+  }
 });
 
 app.get("/register", (req, res) => {
@@ -57,11 +96,15 @@ app.get("/register", (req, res) => {
 });
 
 app.get("/secrets", (req, res) => {
-  if (req.isAuthenticated()) {
-    res.render("secrets");
-  } else {
-    res.redirect("/login");
-  }
+  UserModel.find({ "secret": { $ne: null } }, (err, foundSecrets) => {
+    if (err) {
+      console.log(err);
+    } else {
+      if (foundSecrets) {
+        res.render("secrets", { secrets: foundSecrets });
+      }
+    }
+  });
 });
 
 app.get("/login", (req, res) => {
@@ -100,6 +143,31 @@ app.post("/login", (req, res) => {
       console.log(err);
     } else {
       passport.authenticate("local")(req, res, () => res.redirect("/secrets"));
+    }
+  });
+});
+
+app.get("/submit", (req, res) => {
+  if (req.isAuthenticated()) {
+    res.render("submit");
+  } else {
+    res.redirect("/login");
+  }
+});
+
+app.post("/submit", (req, res) => {
+  const secret = req.body.secret;
+
+  UserModel.findById(req.user.id, (err, foundUser) => {
+    if (err) {
+      console.log(err);
+    } else {
+      if (foundUser) {
+        foundUser.secret = secret;
+        foundUser.save(() => {
+          res.redirect("/secrets");
+        });
+      }
     }
   });
 });
